@@ -9,7 +9,14 @@ mod app;
 #[allow(unsafe_code)]
 mod apple_entry;
 #[cfg(any(target_os = "ios", test))]
+mod clipboard;
+#[cfg(any(target_os = "ios", test))]
 mod documents;
+#[cfg(target_os = "ios")]
+#[allow(unsafe_code)]
+mod gc_keyboard;
+#[cfg(any(target_os = "ios", test))]
+mod hw_keys;
 #[cfg(any(target_os = "ios", test))]
 mod logging;
 #[cfg(target_os = "ios")]
@@ -21,6 +28,8 @@ mod scenes;
 mod services;
 #[cfg(any(target_os = "ios", test))]
 mod storage;
+#[cfg(any(target_os = "ios", test))]
+mod workspace;
 
 /// Stencil bits of the window's render pass (as in the desktop app).
 const STENCIL_BITS: u8 = 8;
@@ -101,12 +110,22 @@ pub fn run() -> Result<(), String> {
             native_options(),
             Box::new(move |cc| {
                 scenes::attach(cc)?;
+                gc_keyboard::install(cc.egui_ctx.clone());
                 // Hide the status bar through the safe platform API so it cannot overlay egui's menu.
                 use winit::platform::ios::WindowExtIOS;
                 if let Some(window) = cc.winit_window() {
                     window.set_prefers_status_bar_hidden(true);
                 }
                 let mut app = CadApp::new(Session::empty(), services::ios(root.clone(), cc.egui_ctx.clone()));
+                // The panel layout and which palettes show, kept from the last run.
+                let (workspace, restored, workspace_error) = workspace::Workspace::at(root.as_ref().map(|r| r.join("workspace.json")));
+                if let Some(ui) = restored {
+                    app.ui = ui;
+                }
+                if let Some(error) = &workspace_error {
+                    log::warn!("CADCraft workspace: {error}");
+                    app.set_status(error);
+                }
                 app.system_languages = sys_locale::get_locales().collect();
                 if let Some(root) = &root {
                     // Settings kept by an earlier run: the profile (Options), the interface and autosave preferences.
@@ -136,7 +155,7 @@ pub fn run() -> Result<(), String> {
                 if app.session.docs.is_empty() {
                     app.session.new_drawing(false);
                 }
-                Ok(Box::new(app::IosApp::new(app, root)))
+                Ok(Box::new(app::IosApp::new(app, root, workspace, workspace_error)))
             }),
         )
         .map_err(|error| format!("CADCraft iOS startup failed: {error}"))

@@ -17,8 +17,10 @@ desktop and web builds, downloads, the other Crafting Apps, contributing), read 
   window, safe-area insets taken from UIKit every frame, settings and autosave in the app container). Open
   imports a copy of the file into the app container and remembers where it came from; Save reserves a file
   there, and a change tracker takes each saved drawing to the export picker the first time and to the
-  remembered location after. The desktop-only parts (control server, SpaceMouse, native menu, workspace
-  file) are not part of it.
+  remembered location after. Also: a hardware keyboard through GameController (Enter, arrows, Escape, Tab,
+  function keys and Cmd/Ctrl shortcuts, which winit never delivers on iPadOS), the system text clipboard and
+  links through UIKit, and the panel layout kept between runs. The desktop-only parts (control server,
+  SpaceMouse, native menu) are not part of it.
 - **Pickers that answer later** (`crates/ui-egui/src/picks.rs`): `Services` gains `begin_pick` and
   `poll_pick`, because UIDocumentPicker needs the main thread's run loop that egui draws on, so a blocking
   `pick_open` would deadlock. Every file dialog (Open, Save As, Import, Export, Publish, Plot, XATTACH...)
@@ -37,10 +39,12 @@ Verified in the iPad Air 11-inch M3 simulator (iPadOS 26.2, 2026-10-13): the app
 and draws its interface (tool bar, Tool Sets, Layers and Properties palettes, command line, status bar) in
 portrait inside the safe area.
 
-**Not yet verified:** opening and saving through the Files picker, touch, Apple Pencil, an external
-keyboard and its shortcuts (CADCraft depends heavily on typed commands), multitasking, landscape, Release
-builds, anything on a physical iPad. Not wired up: the saved workspace layout, the system clipboard, opening
-URLs. This is a first bootstrap, not a hardware sign-off.
+**Not yet verified:** opening and saving through the Files picker, touch, an external keyboard and its
+shortcuts (CADCraft depends heavily on typed commands), the clipboard and links, the saved layout across
+launches, multitasking, landscape, anything on a physical iPad. Written and unit-tested on the host but not
+exercised: the keyboard, clipboard and link bridges. Not done: Apple Pencil specifics (hover, pressure and
+squeeze; the Pencil works as a touch pointer through winit). This is a first bootstrap, not a hardware
+sign-off.
 
 ## Build and run
 
