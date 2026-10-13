@@ -5,6 +5,7 @@
 
 mod assets;
 mod ico;
+mod ios;
 mod layers;
 mod parity;
 mod stats;
@@ -27,6 +28,8 @@ commands:
   parity          recompute the AutoCAD menu-breadth checklist in docs/parity-checklist.md
   ico <out.ico> <in.png>...
                   pack square PNGs (<= 256 px) into a Windows .ico (see packaging/icons.sh)
+  ios (--sim | --device) [--release] [--dry-run]
+                  build the iPad bundle (packaging/ios) and run it on the Simulator or a device (macOS + Xcode)
 ";
 
 fn main() -> ExitCode {
@@ -41,6 +44,7 @@ fn main() -> ExitCode {
         Some("stats") => stats::run(&root(), rest.contains(&"--exact")),
         Some("parity") => parity::run(&root()),
         Some("ico") => ico::run(&rest),
+        Some("ios") => ios::run(&root(), &rest),
         Some("version") => version::run(&root(), &rest),
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");

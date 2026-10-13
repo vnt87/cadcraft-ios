@@ -23,6 +23,7 @@ Generated-in-code assets are original and have no file to list:
 
 | Asset | Author | Source | Licence | Notes |
 |---|---|---|---|---|
+| `packaging/ios/CADCraft/Assets.xcassets/AppIcon.appiconset/AppIcon.png` | CADCraft contributors | generated from `assets/app-icon/cadcraft-1024.png`, flattened onto its field colour (#14a3c7, no alpha, no rounded clip) | MIT OR Apache-2.0 | iPadOS app icon |
 | `assets/app-icon/hicolor/128x128/apps/ai.storyteller.cadcraft.png` | CADCraft contributors | generated from `assets/app-icon/cadcraft-1024.png` | MIT OR Apache-2.0 | Linux hicolor icon |
 | `assets/app-icon/hicolor/16x16/apps/ai.storyteller.cadcraft.png` | CADCraft contributors | generated from `assets/app-icon/cadcraft-1024.png` | MIT OR Apache-2.0 | Linux hicolor icon |
 | `assets/app-icon/hicolor/24x24/apps/ai.storyteller.cadcraft.png` | CADCraft contributors | generated from `assets/app-icon/cadcraft-1024.png` | MIT OR Apache-2.0 | Linux hicolor icon |
