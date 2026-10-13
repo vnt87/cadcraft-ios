@@ -40,6 +40,7 @@ pub mod opening;
 pub mod options;
 pub mod palettes;
 pub mod parametric;
+pub mod picks;
 pub mod plotstyles;
 pub mod quick;
 pub mod shortcut_menus;
@@ -188,6 +189,12 @@ impl Default for UiState {
 pub struct Services {
     pub pick_open: Option<Box<dyn Fn() -> Option<String>>>,
     pub pick_save: Option<Box<dyn Fn(&str) -> Option<String>>>,
+    /// A platform whose file picker answers on a later frame (iPadOS): start the pick and return
+    /// `true`, or `false` to have the blocking closures used. See [`picks`].
+    pub begin_pick: Option<Box<dyn FnMut(&picks::PickRequest) -> bool>>,
+    /// The answer to the pick `begin_pick` started: `None` while the user is choosing, `Some(None)`
+    /// when they cancelled, `Some(Some(path))` for a choice. Asked every frame while a pick is open.
+    pub poll_pick: Option<Box<dyn FnMut() -> Option<Option<String>>>>,
 }
 
 pub struct CadApp {
@@ -207,6 +214,8 @@ pub struct CadApp {
     pub status: Option<(String, f64)>,
     /// Drawings being read on worker threads ([`opening`]).
     pub opening: opening::Opening,
+    /// What to do with the answer of the picker [`Services::begin_pick`] started ([`picks`]).
+    pending_pick: Option<picks::PickDone>,
     pub integrated_titlebar: bool,
     control_rx: Option<Receiver<ControlRequest>>,
     pending_shots: Vec<(u64, Option<String>, std::sync::mpsc::Sender<Value>, f64)>,
@@ -259,6 +268,7 @@ impl CadApp {
             cmd: cmdline::CmdLine::default(),
             status: None,
             opening: opening::Opening::default(),
+            pending_pick: None,
             integrated_titlebar: false,
             control_rx: None,
             pending_shots: Vec::new(),
@@ -563,6 +573,10 @@ impl CadApp {
         }
         self.drain_control(ctx);
         self.finish_opening();
+        self.poll_pick();
+        if self.picking() {
+            ctx.request_repaint();
+        }
         self.opening.show(ctx);
         if !self.synthetic.is_empty() {
             ctx.request_repaint();

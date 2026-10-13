@@ -8,6 +8,7 @@ use egui::TextureHandle;
 use serde_json::{Value, json};
 
 use crate::CadApp;
+use crate::picks::{PickKind, PickRequest};
 
 /// Bumped each time PREVIEW is started, so the window renders the drawing as it is now.
 static PREVIEW_GEN: AtomicU32 = AtomicU32::new(0);
@@ -24,25 +25,26 @@ pub fn route(app: &mut CadApp, id: &str) -> Result<Value, String> {
             Ok(Value::Null)
         }
         "import" | "imp" => {
-            let Some(pick) = app.services.pick_open.as_ref() else { return no_picker(app, "IMPORT", r#"import {"path": "parts.dxf"}"#) };
-            match pick() {
-                Some(path) => app.run("import", json!({ "path": path })),
-                None => Ok(Value::Null),
+            if !app.can_pick(PickKind::Open) {
+                return no_picker(app, "IMPORT", r#"import {"path": "parts.dxf"}"#);
             }
+            app.pick(PickRequest::open("Import", &["dwg", "dxf", "dwt", "svg", "svgz"]), |app, path| app.run("import", json!({ "path": path })))
+                .value()
         }
         "publish" => {
-            let Some(pick) = app.services.pick_save.as_ref() else { return no_picker(app, "PUBLISH", "publish {}") };
-            match pick(&format!("{stem}.pdf")) {
-                Some(path) => app.run("publish", json!({ "path": path })),
-                None => Ok(Value::Null),
+            if !app.can_pick(PickKind::Save) {
+                return no_picker(app, "PUBLISH", "publish {}");
             }
+            app.pick(PickRequest::save("Publish", &format!("{stem}.pdf"), &["pdf"]), |app, path| app.run("publish", json!({ "path": path }))).value()
         }
         _ => {
-            let Some(pick) = app.services.pick_save.as_ref() else { return no_picker(app, "EXPORT", r#"export {"format": "svg"}"#) };
-            match pick(&format!("{stem}.svg")) {
-                Some(path) => app.run("export", json!({ "path": path })),
-                None => Ok(Value::Null),
+            if !app.can_pick(PickKind::Save) {
+                return no_picker(app, "EXPORT", r#"export {"format": "svg"}"#);
             }
+            app.pick(PickRequest::save("Export", &format!("{stem}.svg"), &["svg", "png", "pdf"]), |app, path| {
+                app.run("export", json!({ "path": path }))
+            })
+            .value()
         }
     }
 }
@@ -176,6 +178,7 @@ mod tests {
                 b.borrow_mut().push(name.to_string());
                 None
             })),
+            ..Services::default()
         };
         (CadApp::new(Session::new(), services), asked)
     }

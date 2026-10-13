@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 
 use crate::CadApp;
 use crate::parametric::expr_field;
+use crate::picks::{PickKind, PickOutcome, PickRequest};
 use crate::theme::Tokens;
 
 /// The Block Attribute Manager (BATTMAN).
@@ -127,12 +128,14 @@ fn linetype(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
                     }
                 }
                 // The user's own .lin file (where the host has a file picker).
-                if let Some(pick) = app.services.pick_open.as_ref() {
+                if app.can_pick(PickKind::Open) {
                     ui.separator();
-                    if ui.selectable_label(false, "From File...").clicked()
-                        && let Some(path) = pick()
-                    {
-                        action = Some(("linetype", json!({ "load": "*", "file": path })));
+                    if ui.selectable_label(false, "From File...").clicked() {
+                        // Where the picker answers later the load runs then, from the app.
+                        let outcome = app.pick(PickRequest::open("Load linetypes", &["lin"]), |app, path| {
+                            app.run("linetype", json!({ "load": "*", "file": path }))
+                        });
+                        let _ = outcome.value();
                     }
                 }
             });
@@ -1029,30 +1032,45 @@ fn plot(app: &mut CadApp, ctx: &egui::Context, open: &mut bool) -> Action {
     }
     if ok {
         let mut params = plot_params(&st, None);
-        if let Some(pick) = app.services.pick_save.as_ref() {
+        if app.can_pick(PickKind::Save) {
             let title = app.session.state().map(|s| s.title.clone()).unwrap_or_default();
             let stem = std::path::Path::new(&title).file_stem().map(|s| s.to_string_lossy().to_string()).filter(|s| !s.is_empty());
             let suggested = format!("{}-{}.{ext}", stem.unwrap_or_else(|| "Drawing".into()), st.target);
-            // Cancelling the file dialog keeps the Plot dialog open with its settings.
-            let Some(path) = pick(&suggested) else { return action };
-            if let Some(o) = params.as_object_mut() {
-                o.insert("path".into(), json!(path));
+            let target = st.target.clone();
+            let outcome = app.pick(PickRequest::save("Plot", &suggested, &[ext]), move |app, path| {
+                if let Some(o) = params.as_object_mut() {
+                    o.insert("path".into(), json!(path));
+                }
+                plot_and_report(app, params, &target)
+            });
+            match outcome {
+                // Cancelling the file dialog keeps the Plot dialog open with its settings.
+                PickOutcome::Cancelled => {}
+                // `run` already echoed the error; keep the dialog open to fix the settings.
+                PickOutcome::Done(Err(_)) => *open = true,
+                // Where the picker answers later the dialog closes now and the plot runs then.
+                _ => *open = false,
             }
+            return action;
         }
         *open = false;
-        match app.run("plot", params) {
-            Ok(r) => {
-                let msg = match r.get("path").and_then(Value::as_str) {
-                    Some(path) => format!("Plotted {} to {path}", st.target),
-                    None => format!("Plotted {} ({} bytes of PDF; there is no file dialog here)", st.target, r["bytes"]),
-                };
-                app.session.echo(msg);
-            }
-            // `run` already echoed the error; keep the dialog open to fix the settings.
-            Err(_) => *open = true,
+        // `run` already echoed the error; keep the dialog open to fix the settings.
+        if plot_and_report(app, params, &st.target).is_err() {
+            *open = true;
         }
     }
     action
+}
+
+/// Run PLOT and say where it went.
+fn plot_and_report(app: &mut CadApp, params: Value, target: &str) -> Result<Value, String> {
+    let r = app.run("plot", params)?;
+    let msg = match r.get("path").and_then(Value::as_str) {
+        Some(path) => format!("Plotted {target} to {path}"),
+        None => format!("Plotted {target} ({} bytes of PDF; there is no file dialog here)", r["bytes"]),
+    };
+    app.session.echo(msg);
+    Ok(r)
 }
 
 /// The sheet in the chosen orientation with its printable area, and its size.
