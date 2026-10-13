@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (zoom and pan regenerate in the background) · **Target:** Autodesk AutoCAD 2027 (Mac and Windows)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-13 · **Change:** minor (iPadOS fork section; earlier: zoom and pan regenerate in the background) · **Target:** Autodesk AutoCAD 2027 (Mac and Windows)
 
 The hardware AutoCAD uses and how CADCraft compares, per platform. Work items:
 [gaps.md](gaps.md#hardware).
@@ -44,9 +44,20 @@ worker thread while the previous list is drawn, so the longest stall is 26–64 
 Edits still rebuild on the UI thread (about 1.8 s on that drawing): per-entity caching is the
 next step.
 
+## iPadOS (fork)
+
+Only what has been demonstrated. On the iPad Air 11-inch (M3) Simulator with iPadOS 26.2 (2026-10-13): the
+Debug app builds for Apple Silicon, installs, launches and draws its interface in portrait inside the safe
+area. File pickers use `Services::begin_pick`/`poll_pick` (answered on a later frame) over UIKit's document
+picker; host tests cover that flow, the runner's storage and change tracking, but the picker itself is not yet
+exercised. Nothing has been run on a physical iPad. Not demonstrated or not wired up: opening and saving a
+drawing end to end, touch, Apple Pencil, an external keyboard (typed commands and shortcuts), multitasking,
+landscape, the saved workspace layout, the system clipboard, opening URLs.
+
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-13 | minor | iPadOS fork section: simulator launch and interface drawn only; everything else listed as not demonstrated |
 | 2026-10-13 | minor | Zoom and pan regenerate in the background: 2–4.5 s stalls down to 26–64 ms on a hatched DWG |
 | 2026-10-10 | major | First hardware parity doc: GPU backends per platform, input devices, displays, plotters |
