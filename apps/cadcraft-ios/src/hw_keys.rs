@@ -123,7 +123,7 @@ fn is_navigation(key: Key) -> bool {
     )
 }
 
-/// Keys that repeat while held (text keys repeat through UIKit's own `insertText:`).
+/// Keys that repeat while held (text keys too, when typed here rather than through UIKit's `insertText:`).
 fn repeats(key: Key) -> bool {
     use Key::*;
     matches!(key, Enter | Tab | Backspace | Delete | Home | End | PageUp | PageDown | ArrowUp | ArrowDown | ArrowLeft | ArrowRight)
@@ -132,6 +132,8 @@ fn repeats(key: Key) -> bool {
 #[derive(Clone, Copy)]
 struct Held {
     key: Key,
+    /// Set for a key that types a character: its repeats are text, not key events.
+    text: Option<char>,
     next_repeat: f64,
 }
 
@@ -210,6 +212,9 @@ impl HwKeys {
         {
             if pressed {
                 events.push(Event::Text(ch.to_string()));
+                self.held = Some(Held { key, text: Some(ch), next_repeat: now + REPEAT_DELAY });
+            } else if self.held.is_some_and(|h| h.key == key) {
+                self.held = None;
             }
             return events;
         }
@@ -220,7 +225,7 @@ impl HwKeys {
         }
         if pressed {
             if repeats(key) {
-                self.held = Some(Held { key, next_repeat: now + REPEAT_DELAY });
+                self.held = Some(Held { key, text: None, next_repeat: now + REPEAT_DELAY });
             }
         } else if self.held.is_some_and(|h| h.key == key) {
             self.held = None;
@@ -236,7 +241,10 @@ impl HwKeys {
         let mut events = Vec::new();
         // Bounded: a long stall yields a few repeats, not hundreds.
         while now >= held.next_repeat && events.len() < 4 {
-            events.push(Event::Key { key: held.key, physical_key: Some(held.key), pressed: true, repeat: true, modifiers });
+            events.push(match held.text {
+                Some(ch) => Event::Text(ch.to_string()),
+                None => Event::Key { key: held.key, physical_key: Some(held.key), pressed: true, repeat: true, modifiers },
+            });
             held.next_repeat += REPEAT_INTERVAL;
         }
         if now >= held.next_repeat {
@@ -407,5 +415,15 @@ mod tests {
         assert_eq!(text_for(0x2C, false), Some(' '));
         assert_eq!(text_for(0x36, true), Some('<'));
         assert_eq!(text_for(0x29, false), None);
+    }
+
+    #[test]
+    fn a_held_letter_repeats_as_text_and_stops_on_release() {
+        let mut keys = HwKeys::default();
+        keys.handle(A, true, 0.0, false);
+        assert!(keys.tick(0.2).is_empty());
+        assert!(matches!(keys.tick(0.41).as_slice(), [Event::Text(t)] if t == "a"));
+        keys.handle(A, false, 0.5, false);
+        assert!(keys.tick(1.0).is_empty());
     }
 }

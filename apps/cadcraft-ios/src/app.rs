@@ -91,6 +91,10 @@ impl eframe::App for IosApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.cad.ui(ui);
         crate::clipboard::handle_output(ui.ctx());
+        // The wake is asked for inside the pass: one asked for before it starts is dropped.
+        if let Some(wait) = self.keys.next_wake(ui.input(|i| i.time)) {
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(wait.max(0.001)));
+        }
     }
 
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
