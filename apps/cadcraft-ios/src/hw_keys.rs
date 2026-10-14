@@ -61,6 +61,35 @@ pub fn key_for(code: u32) -> Option<Key> {
     })
 }
 
+/// The US-layout character a key types, if it types one.
+pub fn text_for(code: u32, shift: bool) -> Option<char> {
+    let (plain, shifted) = match code {
+        0x04..=0x1D => {
+            let letter = char::from(b'a'.checked_add(u8::try_from(code - 0x04).ok()?)?);
+            (letter, letter.to_ascii_uppercase())
+        }
+        0x1E..=0x26 => {
+            let digit = char::from(b'1'.checked_add(u8::try_from(code - 0x1E).ok()?)?);
+            (digit, *['!', '@', '#', '$', '%', '^', '&', '*', '('].get((code - 0x1E) as usize)?)
+        }
+        0x27 => ('0', ')'),
+        0x2C => (' ', ' '),
+        0x2D => ('-', '_'),
+        0x2E => ('=', '+'),
+        0x2F => ('[', '{'),
+        0x30 => (']', '}'),
+        0x31 => ('\\', '|'),
+        0x33 => (';', ':'),
+        0x34 => ('\'', '"'),
+        0x35 => ('`', '~'),
+        0x36 => (',', '<'),
+        0x37 => ('.', '>'),
+        0x38 => ('/', '?'),
+        _ => return None,
+    };
+    Some(if shift { shifted } else { plain })
+}
+
 /// Keys winit never delivers from a hardware keyboard: always forwarded.
 fn is_navigation(key: Key) -> bool {
     use Key::*;
@@ -97,7 +126,7 @@ fn is_navigation(key: Key) -> bool {
 /// Keys that repeat while held (text keys repeat through UIKit's own `insertText:`).
 fn repeats(key: Key) -> bool {
     use Key::*;
-    matches!(key, Enter | Tab | Delete | Home | End | PageUp | PageDown | ArrowUp | ArrowDown | ArrowLeft | ArrowRight)
+    matches!(key, Enter | Tab | Backspace | Delete | Home | End | PageUp | PageDown | ArrowUp | ArrowDown | ArrowLeft | ArrowRight)
 }
 
 #[derive(Clone, Copy)]
@@ -147,7 +176,11 @@ impl HwKeys {
     }
 
     /// One key went down or up. Returns the egui events to inject.
-    pub fn handle(&mut self, code: u32, pressed: bool, now: f64) -> Vec<Event> {
+    ///
+    /// `wants_text` is true while an egui text field has focus: winit then delivers the text and
+    /// Backspace itself. Otherwise (the command line, the canvas) no UIKit text input is active, so
+    /// printable keys and Backspace are produced here.
+    pub fn handle(&mut self, code: u32, pressed: bool, now: f64, wants_text: bool) -> Vec<Event> {
         let before = self.modifiers();
         let slot = |flags: &mut [bool; 2], index: usize| {
             if let Some(flag) = flags.get_mut(index) {
@@ -170,8 +203,19 @@ impl HwKeys {
         let mut events = if modifiers != before { vec![Event::ModifiersChanged(modifiers)] } else { Vec::new() };
         let Some(key) = key_for(code) else { return events };
         let shortcut = modifiers.ctrl || modifiers.command;
+        if !wants_text
+            && !shortcut
+            && !modifiers.alt
+            && let Some(ch) = text_for(code, modifiers.shift)
+        {
+            if pressed {
+                events.push(Event::Text(ch.to_string()));
+            }
+            return events;
+        }
+        let own_backspace = !wants_text && key == Key::Backspace;
         // Plain text keys and Backspace arrive through winit; everything else is ours.
-        if !(is_navigation(key) || (shortcut && key != Key::Backspace)) {
+        if !(is_navigation(key) || own_backspace || (shortcut && key != Key::Backspace)) {
             return events;
         }
         if pressed {
@@ -240,66 +284,66 @@ mod tests {
     #[test]
     fn enter_and_arrows_are_forwarded() {
         let mut keys = HwKeys::default();
-        assert_eq!(key_events(&keys.handle(RETURN, true, 0.0)), vec![(Key::Enter, true, false)]);
-        assert_eq!(key_events(&keys.handle(RETURN, false, 0.1)), vec![(Key::Enter, false, false)]);
-        assert_eq!(key_events(&keys.handle(LEFT, true, 0.2)), vec![(Key::ArrowLeft, true, false)]);
+        assert_eq!(key_events(&keys.handle(RETURN, true, 0.0, true)), vec![(Key::Enter, true, false)]);
+        assert_eq!(key_events(&keys.handle(RETURN, false, 0.1, true)), vec![(Key::Enter, false, false)]);
+        assert_eq!(key_events(&keys.handle(LEFT, true, 0.2, true)), vec![(Key::ArrowLeft, true, false)]);
     }
 
     #[test]
     fn plain_text_keys_and_backspace_are_left_to_winit() {
         let mut keys = HwKeys::default();
-        assert!(keys.handle(A, true, 0.0).is_empty());
-        assert!(keys.handle(A, false, 0.1).is_empty());
-        assert!(keys.handle(BACKSPACE, true, 0.2).is_empty());
+        assert!(keys.handle(A, true, 0.0, true).is_empty());
+        assert!(keys.handle(A, false, 0.1, true).is_empty());
+        assert!(keys.handle(BACKSPACE, true, 0.2, true).is_empty());
         // Shift alone is still text.
-        keys.handle(LEFT_SHIFT, true, 0.3);
-        assert!(keys.handle(A, true, 0.3).is_empty());
+        keys.handle(LEFT_SHIFT, true, 0.3, true);
+        assert!(keys.handle(A, true, 0.3, true).is_empty());
     }
 
     #[test]
     fn cmd_a_is_a_command_shortcut() {
         let mut keys = HwKeys::default();
-        assert_eq!(keys.handle(LEFT_GUI, true, 0.0).len(), 1);
-        let events = keys.handle(A, true, 0.1);
+        assert_eq!(keys.handle(LEFT_GUI, true, 0.0, true).len(), 1);
+        let events = keys.handle(A, true, 0.1, true);
         assert_eq!(key_events(&events), vec![(Key::A, true, false)]);
         assert!(matches!(events.first(), Some(Event::Key { modifiers, .. }) if modifiers.command && modifiers.mac_cmd && !modifiers.ctrl));
         // Cmd+Backspace is deleteBackward's to handle, not ours.
-        assert!(keys.handle(BACKSPACE, true, 0.2).is_empty());
-        keys.handle(LEFT_GUI, false, 0.3);
-        assert!(keys.handle(A, true, 0.4).is_empty());
+        assert!(keys.handle(BACKSPACE, true, 0.2, true).is_empty());
+        keys.handle(LEFT_GUI, false, 0.3, true);
+        assert!(keys.handle(A, true, 0.4, true).is_empty());
         assert!(!keys.modifiers().command);
     }
 
     #[test]
     fn shift_arrow_carries_shift() {
         let mut keys = HwKeys::default();
-        keys.handle(RIGHT_SHIFT, true, 0.0);
-        let events = keys.handle(LEFT, true, 0.1);
+        keys.handle(RIGHT_SHIFT, true, 0.0, true);
+        let events = keys.handle(LEFT, true, 0.1, true);
         assert!(matches!(events.first(), Some(Event::Key { modifiers, .. }) if modifiers.shift && !modifiers.command));
-        assert!(matches!(keys.handle(RIGHT_SHIFT, false, 0.2).first(), Some(Event::ModifiersChanged(m)) if !m.shift));
+        assert!(matches!(keys.handle(RIGHT_SHIFT, false, 0.2, true).first(), Some(Event::ModifiersChanged(m)) if !m.shift));
     }
 
     #[test]
     fn both_sides_of_a_modifier_must_be_released() {
         let mut keys = HwKeys::default();
-        keys.handle(LEFT_GUI, true, 0.0);
-        keys.handle(RIGHT_GUI, true, 0.0);
-        keys.handle(LEFT_GUI, false, 0.1);
+        keys.handle(LEFT_GUI, true, 0.0, true);
+        keys.handle(RIGHT_GUI, true, 0.0, true);
+        keys.handle(LEFT_GUI, false, 0.1, true);
         assert!(keys.modifiers().command);
-        keys.handle(RIGHT_GUI, false, 0.2);
+        keys.handle(RIGHT_GUI, false, 0.2, true);
         assert!(!keys.modifiers().command);
     }
 
     #[test]
     fn held_arrow_repeats_after_the_delay_until_released() {
         let mut keys = HwKeys::default();
-        keys.handle(LEFT, true, 1.0);
+        keys.handle(LEFT, true, 1.0, true);
         assert!(keys.tick(1.2).is_empty());
         assert!(keys.is_repeating());
         let repeats = key_events(&keys.tick(1.4));
         assert_eq!(repeats, vec![(Key::ArrowLeft, true, true)]);
         assert!(keys.next_wake(1.4).is_some_and(|s| s > 0.0 && s < REPEAT_INTERVAL + 1e-6));
-        keys.handle(LEFT, false, 1.5);
+        keys.handle(LEFT, false, 1.5, true);
         assert!(!keys.is_repeating());
         assert!(keys.tick(5.0).is_empty());
     }
@@ -307,25 +351,61 @@ mod tests {
     #[test]
     fn a_long_stall_does_not_flood_repeats() {
         let mut keys = HwKeys::default();
-        keys.handle(LEFT, true, 0.0);
+        keys.handle(LEFT, true, 0.0, true);
         assert!(keys.tick(1000.0).len() <= 4);
     }
 
     #[test]
     fn text_shortcuts_do_not_repeat() {
         let mut keys = HwKeys::default();
-        keys.handle(LEFT_GUI, true, 0.0);
-        keys.handle(A, true, 0.0);
+        keys.handle(LEFT_GUI, true, 0.0, true);
+        keys.handle(A, true, 0.0, true);
         assert!(!keys.is_repeating());
     }
 
     #[test]
     fn release_all_clears_state() {
         let mut keys = HwKeys::default();
-        keys.handle(LEFT_GUI, true, 0.0);
-        keys.handle(LEFT, true, 0.0);
+        keys.handle(LEFT_GUI, true, 0.0, true);
+        keys.handle(LEFT, true, 0.0, true);
         assert!(matches!(keys.release_all().first(), Some(Event::ModifiersChanged(m)) if !m.command));
         assert!(!keys.modifiers().command);
         assert!(!keys.is_repeating());
+    }
+
+    #[test]
+    fn typing_without_a_text_field_produces_text_and_backspace() {
+        let mut keys = HwKeys::default();
+        assert!(matches!(keys.handle(A, true, 0.0, false).as_slice(), [Event::Text(t)] if t == "a"));
+        assert!(keys.handle(A, false, 0.1, false).is_empty());
+        keys.handle(LEFT_SHIFT, true, 0.2, false);
+        assert!(matches!(keys.handle(A, true, 0.3, false).as_slice(), [Event::Text(t)] if t == "A"));
+        assert_eq!(key_events(&keys.handle(BACKSPACE, true, 0.4, false)), vec![(Key::Backspace, true, false)]);
+        assert!(keys.is_repeating());
+    }
+
+    #[test]
+    fn a_focused_text_field_keeps_text_with_winit() {
+        let mut keys = HwKeys::default();
+        assert!(keys.handle(A, true, 0.0, true).is_empty());
+        assert!(keys.handle(BACKSPACE, true, 0.1, true).is_empty());
+    }
+
+    #[test]
+    fn shortcuts_never_type() {
+        let mut keys = HwKeys::default();
+        keys.handle(LEFT_GUI, true, 0.0, false);
+        let events = keys.handle(A, true, 0.1, false);
+        assert!(events.iter().all(|e| !matches!(e, Event::Text(_))));
+    }
+
+    #[test]
+    fn us_layout_characters() {
+        assert_eq!(text_for(0x1E, false), Some('1'));
+        assert_eq!(text_for(0x1E, true), Some('!'));
+        assert_eq!(text_for(0x27, true), Some(')'));
+        assert_eq!(text_for(0x2C, false), Some(' '));
+        assert_eq!(text_for(0x36, true), Some('<'));
+        assert_eq!(text_for(0x29, false), None);
     }
 }

@@ -96,8 +96,9 @@ impl eframe::App for IosApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         raw_input.events.append(&mut self.pending);
         let now = raw_input.time.unwrap_or_default();
+        let wants_text = ctx.egui_wants_keyboard_input();
         for (code, pressed) in crate::gc_keyboard::drain() {
-            raw_input.events.extend(self.keys.handle(code, pressed, now));
+            raw_input.events.extend(self.keys.handle(code, pressed, now, wants_text));
         }
         raw_input.events.extend(self.keys.tick(now));
         raw_input.events = crate::clipboard::shortcut_events(std::mem::take(&mut raw_input.events), crate::clipboard::text);
