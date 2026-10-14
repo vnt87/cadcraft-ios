@@ -19,6 +19,8 @@ mod gc_keyboard;
 mod hw_keys;
 #[cfg(any(target_os = "ios", test))]
 mod logging;
+#[cfg(any(target_os = "ios", test))]
+mod pencil;
 #[cfg(target_os = "ios")]
 mod safe_area;
 #[cfg(target_os = "ios")]
@@ -111,6 +113,10 @@ pub fn run() -> Result<(), String> {
             Box::new(move |cc| {
                 scenes::attach(cc)?;
                 gc_keyboard::install(cc.egui_ctx.clone());
+                // Apple Pencil hover (the crosshair follows the floating tip) and pressure/tilt/roll.
+                if let Err(error) = pencil::install(pencil::bridge::PenFeed::default(), &cc.egui_ctx) {
+                    log::error!("Apple Pencil input unavailable: {error}");
+                }
                 // Hide the status bar through the safe platform API so it cannot overlay egui's menu.
                 use winit::platform::ios::WindowExtIOS;
                 if let Some(window) = cc.winit_window() {

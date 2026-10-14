@@ -48,18 +48,22 @@ next step.
 
 Only what has been demonstrated. On the iPad Air 11-inch (M3) Simulator with iPadOS 26.2 (2026-10-13): the
 Debug app builds for Apple Silicon, installs, launches and draws its interface in portrait inside the safe
-area. File pickers use `Services::begin_pick`/`poll_pick` (answered on a later frame) over UIKit's document
-picker; host tests cover that flow, the runner's storage and change tracking, but the picker itself is not yet
-exercised. Nothing has been run on a physical iPad. Not demonstrated or not wired up: opening and saving a
-drawing end to end, touch, an external keyboard, multitasking, landscape. Written and unit-tested on the host
-but not yet exercised: a hardware keyboard through GameController (Enter, arrows, Escape, Tab, function
-keys, Cmd/Ctrl shortcuts), the system text clipboard and links through UIKit, and the saved panel layout.
-Apple Pencil hover, pressure and squeeze are not read (the Pencil acts as a touch pointer).
+area. On a physical iPad Air 13-inch (M3), reported by the maintainer (2026-10-14): the app installs and runs;
+with a hardware keyboard (GameController key codes, because winit delivers no Enter, arrows or shortcuts and,
+with no text field focused, no text either) typing into the command line works, including Shift, `@`,
+Backspace and hold-to-repeat, and Cmd+O opens the Files picker and Cmd+S saves. File pickers use
+`Services::begin_pick`/`poll_pick` (answered on a later frame) over UIKit's document picker; host tests cover
+that flow and the runner's storage and change tracking. Not demonstrated or not wired up: opening and saving
+a drawing end to end, touch, multitasking, landscape. Written and unit-tested on the host but not yet
+exercised on a device: the system text clipboard and links through UIKit, the saved panel layout, and Apple
+Pencil hover (the pointer follows the floating tip) with pressure, tilt and roll read per sample; no CAD
+tool uses pressure or tilt yet, and the Pencil double-tap and squeeze are not read.
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | minor | iPadOS fork: hardware keyboard typing, Backspace, repeat and Cmd+O/Cmd+S confirmed on a physical iPad; Apple Pencil hover and pose added (host-tested, not yet exercised) |
 | 2026-10-14 | minor | iPadOS fork: hardware keyboard, clipboard, links and saved layout added (host-tested, not yet exercised on a device) |
 | 2026-10-13 | minor | iPadOS fork section: simulator launch and interface drawn only; everything else listed as not demonstrated |
 | 2026-10-13 | minor | Zoom and pan regenerate in the background: 2–4.5 s stalls down to 26–64 ms on a hatched DWG |
