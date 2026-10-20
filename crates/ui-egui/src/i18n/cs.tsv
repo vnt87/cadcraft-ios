@@ -1137,7 +1137,7 @@
 	Viewport {id}	Výřez {id}
 	Viewports	Výřezy
 	W	Z
-	WCS ⌄	GSS ⌄
+	WCS	GSS
 	White	Bílá
 	Width factor	Faktor šířky
 	Window	Okno
@@ -1215,3 +1215,4 @@ menu	Modify	Modifikace
 	Search for pattern	Hledat vzor
 	Not a number or distance: {text}	Není číslo ani vzdálenost: {text}
 	Query Texts	Dotaz na texty
+	Analyze Shapes	Analyzovat tvary
