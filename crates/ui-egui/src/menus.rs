@@ -4,7 +4,7 @@
 use serde_json::{Value, json};
 
 use crate::CadApp;
-use crate::picks::{PickKind, PickRequest};
+use crate::picks::{PickKind, PickOutcome, PickRequest};
 
 /// What the Open pickers offer.
 const DRAWING_EXTS: &[&str] = &["dwg", "dxf", "dwt", "svg", "svgz"];
@@ -31,7 +31,8 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("ui.toggle.toolsets", "Tool Sets", &["Window", "Tool Sets"], Some("Cmd+3")),
     ("ui.panel.properties", "Properties Inspector", &["Window", "Properties Inspector"], Some("Cmd+1")),
     ("ui.panel.layers", "Layers Palette", &["Window", "Layers Palette"], None),
-    ("ui.panel.quickcalc", "QuickCalc", &["Window", "QuickCalc"], Some("Cmd+8")),
+    ("ui.toggle.quickcalc", "QuickCalc", &["Window", "QuickCalc"], Some("Cmd+8")),
+    ("ui.panel.quickcalc", "QuickCalc", &[], None),
     ("ui.toggle.systemcursor", "Show System Cursor", &["View", "Accessibility", "Show System Cursor"], None),
     ("ui.animations.system", "Use System Setting", &["View", "Accessibility", "Animation Effects", "Use System Setting"], None),
     ("ui.animations.on", "On", &["View", "Accessibility", "Animation Effects", "On"], None),
@@ -66,6 +67,8 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("ui.dialog.qselect", "Quick Select...", &[], None),
     ("ui.dialog.parameters", "Parameters Manager", &["Window", "Parameters Manager"], None),
     ("ui.dialog.dsettings", "Drafting Settings...", &[], None),
+    #[cfg(not(target_arch = "wasm32"))]
+    ("ui.updates.check", "Check for Updates…", &["Help", "Check for Updates…"], None),
     ("ui.dialog.about", "About CADCraft", &["Help", "About CADCraft"], None),
     ("ui.dialog.commands", "Command Reference", &["Help", "CADCraft Help"], Some("F1")),
     ("ui.toggle.history", "Command History", &["Window", "Command History"], Some("F2")),
@@ -106,7 +109,10 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
         let panel = if id == "ui.panel.properties" { "properties" } else { "layers" };
         return Some(crate::docking::command(app, false, &json!({"operation":"open", "panel":panel})));
     }
-    // QUICKCALC typed or from a menu opens the palette; with parameters it is CAL.
+    if id == "ui.toggle.quickcalc" {
+        return Some(crate::palettes::quickcalc::toggle(app));
+    }
+    // Explicit opens remain idempotent; typed QUICKCALC with JSON parameters uses the engine's CAL alias.
     if id == "ui.panel.quickcalc" || (matches!(id, "quickcalc" | "qc") && params.is_null()) {
         return Some(crate::palettes::quickcalc::open(app));
     }
@@ -155,6 +161,52 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
                 Ok(Value::Null)
             })
             .value(),
+        // APPLOAD typed or chosen from a menu: the `.lsp` file picker, starting where the last
+        // one came from. JSON calls carry `path` and never open one. A picked file is loaded as a
+        // typed name is, through the interactive command, so a routine it starts that asks for a
+        // point waits for it. Where a blocking dialog exists the host's `pick_lisp` runs it; a
+        // deferred picker (iPadOS) goes through [`picks`], and the web (no file system) says to
+        // drop the file instead.
+        "appload" | "ap" if params.is_null() => {
+            if app.services.no_file_system {
+                let hint = "APPLOAD: there is no file system here; drop a .lsp file on the window to load it";
+                app.session.echo(hint.to_string());
+                app.set_status(hint);
+                return Some(Ok(Value::Null));
+            }
+            // The chosen file opens as a typed APPLOAD command: remember its folder so the next
+            // pick starts there, start the interactive routine, and feed the file name in.
+            if let Some(pick_lisp) = app.services.pick_lisp.as_ref() {
+                let dir = app.ui.last_lisp_dir.clone().unwrap_or_default();
+                let Some(path) = pick_lisp(&dir) else { return Some(Ok(Value::Null)) };
+                if let Some(dir) = std::path::Path::new(&path).parent().and_then(std::path::Path::to_str).filter(|d| !d.is_empty()) {
+                    app.ui.last_lisp_dir = Some(dir.to_string());
+                }
+                if let Err(e) = app.session.start("appload") {
+                    return Some(Err(e.to_string()));
+                }
+                app.cmdline(&path);
+                return Some(Ok(Value::Null));
+            }
+            if !app.can_pick(PickKind::Open) {
+                return None;
+            }
+            let outcome = app.pick(PickRequest::open("APPLOAD (LSP)", &["lsp"]), |app, p| {
+                if let Some(dir) = std::path::Path::new(&p).parent().and_then(std::path::Path::to_str).filter(|d| !d.is_empty()) {
+                    app.ui.last_lisp_dir = Some(dir.to_string());
+                }
+                if let Err(e) = app.session.start("appload") {
+                    return Err(e.to_string());
+                }
+                app.cmdline(&p);
+                Ok(Value::Null)
+            });
+            // A cancelled dialog falls back to the engine's own APPLOAD prompt, a typed command's way.
+            match outcome {
+                PickOutcome::Cancelled | PickOutcome::Unavailable => return None,
+                other => other.value(),
+            }
+        }
         // Pick a template (.dwt or .dxf) and start a new drawing from it.
         "ui.newtemplate" => app
             .pick(PickRequest::open("New from template", &["dwt", "dxf"]), |app, p| {
@@ -348,6 +400,11 @@ fn run_ui_command_inner(app: &mut CadApp, id: &str, params: &Value) -> Option<Re
         | "ui.dialog.qselect"
         | "ui.dialog.parameters" => {
             app.ui.dialog = Some(id.trim_start_matches("ui.dialog.").to_string());
+            Ok(Value::Null)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        "ui.updates.check" => {
+            crate::updates_ui::check_now(app);
             Ok(Value::Null)
         }
         "ui.dialog.close" => {
@@ -609,10 +666,70 @@ fn switch_on_hover(ctx: &egui::Context, titles: &[egui::Response]) {
     }
 }
 
-/// Like choosing a menu item: starts the command interactively.
+/// Activate a menu command. QuickCalc toggles transparently; other items clear pending
+/// command-line text and start their command interactively.
 pub fn activate(app: &mut CadApp, id: &str) {
+    if id == "ui.toggle.quickcalc" {
+        run_transparent(app, id);
+        return;
+    }
     app.cmd.buffer.clear();
     app.start(id);
+}
+
+/// Activate the menu command `id` from a native menu bar, which takes the Edit menu's key
+/// equivalents (⌘C, ⌘X, ⌘V, ⌘A, ⌘Z, ⇧⌘Z) before any window sees them: while a text field has
+/// the keyboard, in the main window or a floating panel's own window, the field gets the key
+/// and the drawing command does not run.
+pub fn activate_native(app: &mut CadApp, ctx: &egui::Context, id: &str) {
+    let (Some(window), Some(text)) = (text_field_window(ctx), text_command(id, ctx.os().is_mac())) else {
+        activate(app, id);
+        return;
+    };
+    match text {
+        TextCommand::Paste => ctx.send_viewport_cmd_to(window, egui::ViewportCommand::RequestPaste),
+        TextCommand::Events(events) if window == egui::ViewportId::ROOT => {
+            app.synthetic.extend(events);
+            ctx.request_repaint();
+        }
+        TextCommand::Events(events) => craft_ui::docking::send_keys(ctx, window, events),
+    }
+}
+
+/// The window whose text field has the keyboard: a floating panel's own OS window, or the main
+/// window.
+pub fn text_field_window(ctx: &egui::Context) -> Option<egui::ViewportId> {
+    craft_ui::docking::typing_window(ctx).or_else(|| ctx.text_edit_focused().then_some(egui::ViewportId::ROOT))
+}
+
+/// Whether a focused text field takes the menu command `id` ([`activate_native`]): a native
+/// menu keeps such items enabled while one has the keyboard, whatever the drawing allows.
+pub fn edits_text(id: &str) -> bool {
+    text_command(id, false).is_some()
+}
+
+/// What a focused text field does for an Edit menu command.
+#[derive(Debug, PartialEq)]
+enum TextCommand {
+    /// The clipboard text, which the window asks for and receives as `Paste`.
+    Paste,
+    Events(Vec<egui::Event>),
+}
+
+fn text_command(id: &str, mac: bool) -> Option<TextCommand> {
+    let key = |key, shift| {
+        let modifiers = egui::Modifiers { mac_cmd: mac, ctrl: !mac, command: true, shift, alt: false };
+        TextCommand::Events([true, false].map(|pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers }).into())
+    };
+    Some(match id {
+        "copyclip" => TextCommand::Events(vec![egui::Event::Copy]),
+        "cutclip" => TextCommand::Events(vec![egui::Event::Cut]),
+        "pasteclip" => TextCommand::Paste,
+        "u" => key(egui::Key::Z, false),
+        "redo" => key(egui::Key::Z, true),
+        "selectall" => key(egui::Key::A, false),
+        _ => return None,
+    })
 }
 
 /// Run `id` with default parameters without cancelling the active command, as the drafting
@@ -668,7 +785,14 @@ pub fn shortcuts(app: &mut CadApp, ctx: &egui::Context) {
         (sc(Modifiers::NONE, Key::F12), "dynmode"),
     ];
     crate::clipboard::mirror(app, ctx);
-    if ctx.egui_wants_keyboard_input() || app.closing.is_some() {
+    if app.closing.is_some() {
+        return;
+    }
+    // A palette toggle is global even while its expression field owns keyboard focus.
+    if ctx.input_mut(|i| i.consume_shortcut(&sc(cmd, Key::Num8))) {
+        run_transparent(app, "ui.toggle.quickcalc");
+    }
+    if ctx.egui_wants_keyboard_input() {
         return;
     }
     // Cmd/Ctrl+C, X and V arrive as clipboard events, not key presses.

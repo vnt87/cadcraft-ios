@@ -20,7 +20,7 @@ pub struct Workspace {
 }
 
 fn snapshot(ui: &UiState) -> Result<Value, String> {
-    ui.docking.validate()?;
+    ui.docking.validate().map_err(|error| error.to_string())?;
     if !matches!(ui.toolset_tab.as_str(), "Drafting" | "Modeling") {
         return Err("toolsetTab must be Drafting or Modeling".into());
     }
@@ -210,14 +210,14 @@ mod tests {
         let mut app = cadcraft_ui_egui::CadApp::new(cadcraft_engine::Session::default(), Default::default());
         app.run("ui.dock", json!({"operation":"float", "panel":"layers", "rect":[120,90,340,410]})).unwrap();
         ui.docking = app.ui.docking;
-        ui.docking.set_visible(Panel::ToolSets, false).unwrap();
+        ui.docking.set_visible(Panel::ToolSets, false, None, cadcraft_ui_egui::docking::permissions).unwrap();
         ui.show_toolsets = false;
         store.save_if_changed(&ui).unwrap();
         let (_, reloaded, error) = Workspace::at(Some(path));
         assert!(error.is_none());
         let mut reloaded = reloaded.unwrap();
         assert_eq!(serde_json::to_value(&reloaded.docking).unwrap(), serde_json::to_value(&ui.docking).unwrap());
-        reloaded.docking.set_visible(Panel::ToolSets, true).unwrap();
+        reloaded.docking.set_visible(Panel::ToolSets, true, None, cadcraft_ui_egui::docking::permissions).unwrap();
         assert!(reloaded.docking.layout.contains(&Panel::ToolSets));
         assert_eq!(reloaded.docking.layout.floating[0].rect, [120.0, 90.0, 340.0, 410.0]);
         fs::remove_dir_all(directory).unwrap();
