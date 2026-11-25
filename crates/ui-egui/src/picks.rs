@@ -81,13 +81,13 @@ impl CadApp {
     /// Ask the user for a file and run `then` with the choice. Only one deferred pick is under way
     /// at a time; a second request while one is open is dropped.
     pub(crate) fn pick(&mut self, request: PickRequest, then: impl FnOnce(&mut CadApp, String) -> Result<Value, String> + 'static) -> PickOutcome {
-        if self.pending_pick.is_some() {
+        if self.deferred_pick.is_some() {
             return PickOutcome::Pending;
         }
         if let Some(begin) = self.services.begin_pick.as_mut()
             && begin(&request)
         {
-            self.pending_pick = Some(Box::new(then));
+            self.deferred_pick = Some(Box::new(then));
             return PickOutcome::Pending;
         }
         let chosen = match request.kind {
@@ -104,12 +104,12 @@ impl CadApp {
     /// Finish the pick under way when the platform has its answer (called every frame). A failure of
     /// what followed is echoed to the command line and the status bar, as a typed command's would be.
     pub fn poll_pick(&mut self) {
-        if self.pending_pick.is_none() {
+        if self.deferred_pick.is_none() {
             return;
         }
         let Some(poll) = self.services.poll_pick.as_mut() else { return };
         let Some(answer) = poll() else { return };
-        if let Some(then) = self.pending_pick.take()
+        if let Some(then) = self.deferred_pick.take()
             && let Some(path) = answer
             && let Err(e) = then(self, path)
         {
@@ -120,7 +120,7 @@ impl CadApp {
 
     /// A pick is waiting for the user's answer.
     pub fn picking(&self) -> bool {
-        self.pending_pick.is_some()
+        self.deferred_pick.is_some()
     }
 }
 

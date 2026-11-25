@@ -319,7 +319,7 @@ pub struct CadApp {
     /// Drawings being read on worker threads ([`opening`]).
     pub opening: opening::Opening,
     /// What to do with the answer of the picker [`Services::begin_pick`] started ([`picks`]).
-    pending_pick: Option<picks::PickDone>,
+    deferred_pick: Option<picks::PickDone>,
     pub integrated_titlebar: bool,
     control_rx: Option<Receiver<ControlRequest>>,
     /// Fresh surface and identity snapshot (see [`capture`]).
@@ -421,7 +421,7 @@ impl CadApp {
             cmd: cmdline::CmdLine::default(),
             status: None,
             opening: opening::Opening::default(),
-            pending_pick: None,
+            deferred_pick: None,
             integrated_titlebar: false,
             control_rx: None,
             capture_geometry: None,
