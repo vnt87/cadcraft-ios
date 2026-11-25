@@ -44,13 +44,121 @@ fn add_and_extents() {
 }
 
 #[test]
-fn hidden_layers_excluded_from_extents() {
+fn frozen_layers_are_left_out_of_extents_and_layers_turned_off_are_not() {
     let mut d = Drawing::new_imperial();
     let c = Common { layer: "Hidden".into(), ..Default::default() };
     d.add(&Space::Model, c, line((100.0, 100.0), (200.0, 200.0))).unwrap();
     d.add(&Space::Model, Common::default(), line((0.0, 0.0), (1.0, 1.0))).unwrap();
     d.layer_mut("Hidden").unwrap().on = false;
+    assert_eq!(d.extents(&Space::Model).max, Vec2::new(200.0, 200.0));
+    d.layer_mut("Hidden").unwrap().frozen = true;
     assert_eq!(d.extents(&Space::Model).max, Vec2::new(1.0, 1.0));
+}
+
+/// DXF group 12: a dimension moved by an older AutoCAD keeps its `*D` block where it was and
+/// the move in the insertion point, and the block draws translated by it. Extents follow the
+/// drawing, not the stale block contents (#2634).
+#[test]
+fn dimension_insertion_point_moves_its_block_in_extents() {
+    let moved = |ins: Vec3| {
+        let mut d = Drawing::new_metric();
+        let mut blk = Block::new("*D1");
+        blk.entities.push(on_layer("0", line((850.0, 920.0), (860.0, 920.0)), 2));
+        d.blocks.insert("*D1".into(), std::sync::Arc::new(blk));
+        let dm = Dimension {
+            kind: DimKind::Aligned,
+            defpt: Vec3::new(5.0, 1.0, 0.0),
+            text_mid: Vec3::ZERO,
+            p13: Vec3::ZERO,
+            p14: Vec3::new(10.0, 0.0, 0.0),
+            p15: Vec3::ZERO,
+            p16: Vec3::ZERO,
+            text: String::new(),
+            style: "Standard".into(),
+            measurement: 0.0,
+            text_rotation: 0.0,
+            user_text_pos: false,
+            block: Some("*D1".into()),
+            insertion_point: ins,
+            overrides: Default::default(),
+            assoc: Vec::new(),
+            marks: Default::default(),
+        };
+        d.add(&Space::Model, Common::default(), EntityKind::Dimension(dm)).unwrap();
+        d
+    };
+    // Without the offset the block's far-away contents reach the extents.
+    assert!(moved(Vec3::ZERO).extents(&Space::Model).max.x > 800.0);
+    // With it, the block draws at the definition points and the extents stay at the drawing.
+    assert!(moved(Vec3::new(-850.0, -920.0, 0.0)).extents(&Space::Model).max.x < 20.0);
+}
+
+/// ZOOM Extents in AutoCAD 2024 (accoreconsole, EXTMIN/EXTMAX read back; AutoCAD pads them by a
+/// few hundredths): a layer turned off counts and a frozen one does not, for an entity, for an
+/// entity inside a block, and for a block reference itself.
+#[test]
+fn extents_count_layers_turned_off_as_autocad() {
+    let mut d = Drawing::new_imperial();
+    for (name, on, frozen) in [("OFFL", false, false), ("FRZ", true, true), ("BOFF", false, false), ("BFRZ", true, true)] {
+        let mut l = Layer::new(name);
+        (l.on, l.frozen) = (on, frozen);
+        d.layers.push(l);
+    }
+    for (layer, b) in [("0", (10.0, 10.0)), ("OFFL", (100.0, 0.0)), ("FRZ", (0.0, 200.0))] {
+        d.add(&Space::Model, Common { layer: layer.into(), ..Default::default() }, line((0.0, 0.0), b)).unwrap();
+    }
+    // AutoCAD: (-0.013, -0.009)…(100.027, 10.006).
+    assert_eq!(extents_pair(&d), (Vec2::ZERO, Vec2::new(100.0, 10.0)));
+
+    let mut d = Drawing::new_imperial();
+    for (name, on, frozen) in [("FRZ", true, true), ("BOFF", false, false), ("BFRZ", true, true)] {
+        let mut l = Layer::new(name);
+        (l.on, l.frozen) = (on, frozen);
+        d.layers.push(l);
+    }
+    let mut blk = Block::new("BX");
+    blk.entities.push(on_layer("0", line((0.0, 0.0), (1.0, 1.0)), 1));
+    blk.entities.push(on_layer("BOFF", line((0.0, 0.0), (50.0, 0.0)), 2));
+    blk.entities.push(on_layer("BFRZ", line((0.0, 0.0), (0.0, 70.0)), 3));
+    d.blocks.insert("BX".into(), std::sync::Arc::new(blk));
+    let at = |x: f64| match plain_insert("BX") {
+        EntityKind::Insert(i) => EntityKind::Insert(Insert { insert: Vec3::new(x, x, 0.0), ..i }),
+        k => k,
+    };
+    d.add(&Space::Model, Common::default(), at(1000.0)).unwrap();
+    d.add(&Space::Model, Common { layer: "FRZ".into(), ..Default::default() }, at(-500.0)).unwrap();
+    // AutoCAD: (1000, 1000)…(1050, 1001).
+    assert_eq!(extents_pair(&d), (Vec2::new(1000.0, 1000.0), Vec2::new(1050.0, 1001.0)));
+
+    // An insert's attributes lie on their own layer, else on their definition's: one on a frozen
+    // layer either way does not count, one on a layer turned off does.
+    let mut d = Drawing::new_imperial();
+    for (name, on, frozen) in [("IOFF", false, false), ("AOFF", false, false), ("AFRZ", true, true)] {
+        let mut l = Layer::new(name);
+        (l.on, l.frozen) = (on, frozen);
+        d.layers.push(l);
+    }
+    let attrib = |tag: &str, at: (f64, f64), layer: Option<&str>| {
+        let mut a = plain_attrib(tag);
+        a.text.insert = Vec3::new(at.0, at.1, 0.0);
+        a.props.layer = layer.map(str::to_string);
+        a
+    };
+    let mut blk = Block::new("BA");
+    blk.entities.push(on_layer("0", line((0.0, 0.0), (1.0, 1.0)), 1));
+    blk.entities.push(on_layer("AFRZ", EntityKind::AttDef(plain_attrib("DEF")), 2));
+    d.blocks.insert("BA".into(), std::sync::Arc::new(blk));
+    let ins = match plain_insert("BA") {
+        EntityKind::Insert(i) => {
+            let attribs =
+                vec![attrib("OWN", (0.0, 300.0), Some("AFRZ")), attrib("DEF", (0.0, -400.0), None), attrib("OFF", (40.0, 0.0), Some("AOFF"))];
+            EntityKind::Insert(Insert { attribs, ..i })
+        }
+        k => k,
+    };
+    d.add(&Space::Model, Common { layer: "IOFF".into(), ..Default::default() }, ins).unwrap();
+    let (min, max) = extents_pair(&d);
+    assert!(min.y > -1.0 && max.y < 50.0 && max.x > 40.0, "{min:?} {max:?}");
 }
 
 #[test]
@@ -81,6 +189,7 @@ fn inserts_of_missing_or_empty_blocks_do_not_stretch_extents() {
             rows: 1,
             col_spacing: 0.0,
             row_spacing: 0.0,
+            clip: None,
         })
     };
     d.blocks.insert("Empty".into(), std::sync::Arc::new(Block::new("Empty")));
@@ -134,6 +243,7 @@ fn visible_attributes_of_a_missing_block_still_count() {
                 rows: 1,
                 col_spacing: 0.0,
                 row_spacing: 0.0,
+                clip: None,
             }),
         )
     };
@@ -177,6 +287,7 @@ fn insert_bounds_with_cyclic_block_terminate() {
             rows: 1,
             col_spacing: 0.0,
             row_spacing: 0.0,
+            clip: None,
         }),
     ));
     b.entities.push(Entity::new(Handle(2), line((0.0, 0.0), (1.0, 1.0))));
@@ -195,6 +306,7 @@ fn insert_bounds_with_cyclic_block_terminate() {
                 rows: 1,
                 col_spacing: 0.0,
                 row_spacing: 0.0,
+                clip: None,
             }),
         )
         .unwrap();
@@ -312,7 +424,33 @@ fn plain_insert(block: &str) -> EntityKind {
         rows: 1,
         col_spacing: 0.0,
         row_spacing: 0.0,
+        clip: None,
     })
+}
+
+/// An attribute (or its definition) `tag` at the origin, one unit high, reading "x".
+fn plain_attrib(tag: &str) -> Attrib {
+    Attrib {
+        tag: tag.into(),
+        text: Text {
+            insert: Vec3::ZERO,
+            align_pt: None,
+            height: 1.0,
+            value: "x".into(),
+            rotation: 0.0,
+            width_factor: 1.0,
+            oblique: 0.0,
+            style: "Standard".into(),
+            halign: HAlign::Left,
+            valign: VAlign::Baseline,
+        },
+        invisible: false,
+        constant: false,
+        prompt: String::new(),
+        props: Default::default(),
+        multiline: None,
+        modes: Default::default(),
+    }
 }
 
 fn on_layer(layer: &str, kind: EntityKind, h: u64) -> Entity {
@@ -383,24 +521,33 @@ fn block_entity_with_invisible_flag_is_ignored_in_insert_extents() {
 }
 
 #[test]
-fn block_entity_on_off_or_frozen_layer_is_ignored() {
-    for frozen in [false, true] {
-        let mut d = drawing_with_block(far_line("Hidden"));
-        assert!(d.layer("Hidden").is_none(), "block contents do not create layers");
-        let mut layer = Layer::new("Hidden");
-        if frozen {
-            layer.frozen = true;
-        } else {
-            layer.on = false;
-        }
-        d.layers.push(layer);
-        assert_eq!(extents_pair(&d), (Vec2::ZERO, Vec2::new(1.0, 1.0)), "frozen = {frozen}");
-        // Turned back on, it counts again.
-        let l = d.layer_mut("Hidden").unwrap();
-        l.on = true;
-        l.frozen = false;
-        assert_eq!(d.extents(&Space::Model).max, Vec2::new(6000.0, 6000.0));
-    }
+fn a_visible_constant_attribute_definition_counts_in_insert_extents() {
+    // #3413: a reference draws a constant definition's value, so its extents reach it.
+    let def = |constant: bool, invisible: bool| {
+        let mut a = plain_attrib("C");
+        a.text.insert = Vec3::new(0.0, 50.0, 0.0);
+        (a.constant, a.invisible) = (constant, invisible);
+        Entity::new(Handle(2), EntityKind::AttDef(a))
+    };
+    let near = extents_pair(&drawing_with_block(def(false, false))).1;
+    assert!(extents_pair(&drawing_with_block(def(true, false))).1.y > near.y + 40.0);
+    // An invisible constant one, like a variable one, does not count.
+    assert_eq!(extents_pair(&drawing_with_block(def(true, true))).1, near);
+}
+
+#[test]
+fn block_entity_on_frozen_layer_is_ignored_and_on_a_layer_turned_off_counts() {
+    let mut d = drawing_with_block(far_line("Hidden"));
+    assert!(d.layer("Hidden").is_none(), "block contents do not create layers");
+    let mut layer = Layer::new("Hidden");
+    layer.frozen = true;
+    d.layers.push(layer);
+    assert_eq!(extents_pair(&d), (Vec2::ZERO, Vec2::new(1.0, 1.0)));
+    // Thawed but turned off, it counts.
+    let l = d.layer_mut("Hidden").unwrap();
+    l.frozen = false;
+    l.on = false;
+    assert_eq!(d.extents(&Space::Model).max, Vec2::new(6000.0, 6000.0));
 }
 
 #[test]
@@ -548,6 +695,7 @@ fn invisible_dimblock_entity_is_ignored_in_dimension_extents() {
                 overrides: Default::default(),
                 assoc: vec![],
                 marks: Default::default(),
+                insertion_point: Vec3::ZERO,
             }),
         )
         .unwrap();
@@ -558,10 +706,10 @@ fn invisible_dimblock_entity_is_ignored_in_dimension_extents() {
     hidden.common.visible = false;
     dim(&mut d, hidden);
     assert!(d.extents(&Space::Model).max.x < 100.0);
-    // Hidden by its layer state.
+    // Hidden by its layer state (frozen; a layer turned off still counts).
     let mut d = Drawing::new_imperial();
     let mut l = Layer::new("*ADSK_CONSTRAINTS");
-    l.on = false;
+    l.frozen = true;
     d.layers.push(l);
     dim(&mut d, on_layer("*ADSK_CONSTRAINTS", line((5000.0, 5000.0), (6000.0, 6000.0)), 2));
     assert!(d.extents(&Space::Model).max.x < 100.0);
@@ -580,4 +728,165 @@ fn space_names_its_tab() {
     assert!(p.is_paper());
     assert_eq!(p.layout(), Some("Sheet A"));
     assert_eq!(p.tab_name(), "Sheet A");
+}
+
+#[test]
+fn new_handles_skip_the_files_object_handles() {
+    let mut d = Drawing::new_metric();
+    let next = d.handseed;
+    let f = std::sync::Arc::make_mut(&mut d.foreign);
+    f.handles.insert(Handle(next), ("LAYER".into(), "0".into()));
+    f.handles.insert(Handle(next + 1), ("NOD".into(), String::new()));
+    assert_eq!(d.new_handle(), Handle(next + 2));
+    assert_eq!(d.new_handle(), Handle(next + 3));
+}
+
+/// In the reserved band a new handle skips the file's kept object handles (#2514) and the handles
+/// objects hold in model space, a layout and a block definition, or that a file record reserved
+/// (#913); off the top of the range it goes on at the bottom of the band. HANDSEED reports the
+/// handle `new_handle` takes.
+#[test]
+fn new_handles_in_the_reserved_band_skip_every_held_handle_and_wrap() {
+    let mut d = Drawing::new_metric();
+    let top = u64::MAX;
+    d.model.push(Entity::new(Handle(top - 4), line((0.0, 0.0), (1.0, 0.0))));
+    let mut sheet = Layout::new("Sheet", 1);
+    sheet.entities.push(Entity::new(Handle(top - 3), line((0.0, 0.0), (1.0, 0.0))));
+    d.layouts.push(sheet);
+    let mut b = Block::new("B");
+    b.entities.push(Entity::new(Handle(top - 2), line((0.0, 0.0), (1.0, 0.0))));
+    d.blocks.insert("B".into(), std::sync::Arc::new(b));
+    std::sync::Arc::make_mut(&mut d.foreign).handles.insert(Handle(top - 1), ("LAYER".into(), "0".into()));
+    d.reserve_handle(Handle(top));
+    d.model.push(Entity::new(Handle(HANDLE_LIMIT), line((0.0, 0.0), (1.0, 0.0))));
+    d.handseed = top - 5;
+    assert_eq!(d.new_handle(), Handle(top - 5));
+    assert_eq!(d.next_handle(), Handle(HANDLE_LIMIT + 1), "a held handle was offered");
+    assert_eq!(d.new_handle(), Handle(HANDLE_LIMIT + 1));
+    assert_eq!(d.handseed, HANDLE_LIMIT + 2);
+    // Handle 0 means "no handle" in a file; a seed there moves on.
+    d.handseed = 0;
+    assert_eq!(d.new_handle(), Handle(1));
+}
+
+/// Several spellings of one DIM field apply once, the last in the map's order, and none is rejected.
+#[test]
+fn dim_style_spellings_of_one_field_apply_once() {
+    let mut st = DimStyle::default();
+    let m = serde_json::json!({ "textHeight": 2.5, "TEXTHEIGHT": 3.5, "DIMTXT": 4.5 });
+    let m = m.as_object().unwrap();
+    let want = m.values().next_back().and_then(serde_json::Value::as_f64).unwrap();
+    assert!(st.apply_fields(m).is_empty());
+    assert_eq!(st.text_height, want);
+}
+
+/// A dimension's block in a parent block: `first` the dimension, or the reference to the same
+/// block "B" (a line and a visible constant attribute definition at y = 50).
+fn parent_of_dimension_and_insert(dimension_first: bool) -> Drawing {
+    // Only "P" is referenced from model space, so "B" is measured inside it and nowhere else.
+    let mut d = Drawing::new_imperial();
+    let mut b = Block::new("B");
+    b.entities.push(Entity::new(Handle(1), line((0.0, 0.0), (1.0, 1.0))));
+    let mut a = plain_attrib("C");
+    a.text.insert = Vec3::new(0.0, 50.0, 0.0);
+    a.constant = true;
+    b.entities.push(Entity::new(Handle(2), EntityKind::AttDef(a)));
+    d.blocks.insert("B".into(), std::sync::Arc::new(b));
+    let dim = EntityKind::Dimension(Dimension {
+        kind: DimKind::Linear { rotation: 0.0 },
+        defpt: Vec3::new(1.0, 1.0, 0.0),
+        text_mid: Vec3::new(0.5, 1.0, 0.0),
+        p13: Vec3::ZERO,
+        p14: Vec3::new(1.0, 0.0, 0.0),
+        p15: Vec3::ZERO,
+        p16: Vec3::ZERO,
+        text: String::new(),
+        style: "Standard".into(),
+        measurement: 1.0,
+        text_rotation: 0.0,
+        user_text_pos: false,
+        block: Some("B".into()),
+        overrides: Default::default(),
+        assoc: vec![],
+        marks: Default::default(),
+        insertion_point: Vec3::ZERO,
+    });
+    let mut kids = vec![dim, plain_insert("B")];
+    if !dimension_first {
+        kids.reverse();
+    }
+    let mut parent = Block::new("P");
+    for (i, k) in kids.into_iter().enumerate() {
+        parent.entities.push(Entity::new(Handle(i as u64 + 10), k));
+    }
+    d.blocks.insert("P".into(), std::sync::Arc::new(parent));
+    d.add(&Space::Model, Common::default(), plain_insert("P")).unwrap();
+    d
+}
+
+#[test]
+fn constant_values_count_whichever_reference_measures_the_block_first() {
+    // A dimension's block draws no constant value, a block reference does, and both read one
+    // cache of block bounds: the reference's extents must not depend on which comes first.
+    let first = extents_pair(&parent_of_dimension_and_insert(true));
+    assert_eq!(first, extents_pair(&parent_of_dimension_and_insert(false)));
+    assert!(first.1.y > 40.0, "the constant value at y = 50 counts: {first:?}");
+}
+
+#[test]
+fn a_constant_value_that_matches_the_layout_orientation_is_measured_upright() {
+    // Drawn upright whatever rotation is stored (#2498), so the extents are those of rotation 0.
+    let def = |rotation: f64, upright: bool| {
+        let mut a = plain_attrib("C");
+        a.text.value = "a long constant value".into();
+        a.text.rotation = rotation;
+        a.constant = true;
+        let mut e = Entity::new(Handle(2), EntityKind::AttDef(a));
+        if upright {
+            e.common.xdata = vec![RawTag { code: 1001, value: "AcadAnnoPO".into() }, RawTag { code: 1070, value: "1".into() }];
+        }
+        e
+    };
+    let flat = extents_pair(&drawing_with_block(def(0.0, false)));
+    assert_eq!(extents_pair(&drawing_with_block(def(std::f64::consts::FRAC_PI_2, true))), flat);
+    assert_ne!(extents_pair(&drawing_with_block(def(std::f64::consts::FRAC_PI_2, false))), flat, "a plain one keeps its rotation");
+}
+
+#[test]
+fn a_constant_value_the_reference_has_an_attribute_for_does_not_count() {
+    // Such a reference draws its attribute, not the definition's value, so a far-off definition
+    // does not stretch its extents; a reference without that attribute still shows the value.
+    let with = |attribs: Vec<Attrib>| {
+        let mut d = Drawing::new_imperial();
+        let mut blk = Block::new("B");
+        blk.entities.push(Entity::new(Handle(1), line((0.0, 0.0), (1.0, 1.0))));
+        let mut a = plain_attrib("C");
+        a.text.insert = Vec3::new(0.0, 5000.0, 0.0);
+        a.constant = true;
+        blk.entities.push(Entity::new(Handle(2), EntityKind::AttDef(a)));
+        d.blocks.insert("B".into(), std::sync::Arc::new(blk));
+        let EntityKind::Insert(mut ins) = plain_insert("B") else { panic!("an insert") };
+        ins.attribs = attribs;
+        d.add(&Space::Model, Common::default(), EntityKind::Insert(ins)).unwrap();
+        extents_pair(&d).1
+    };
+    assert!(with(vec![]).y > 4000.0);
+    assert!(with(vec![plain_attrib("c")]).y < 100.0);
+}
+
+#[test]
+fn constant_values_count_in_extents_as_attmode_shows_them() {
+    // The renderer shows no constant value at ATTMODE 0, and the invisible ones too at 2.
+    let top = |attmode: i64, invisible: bool| {
+        let mut a = plain_attrib("C");
+        a.text.insert = Vec3::new(0.0, 50.0, 0.0);
+        (a.constant, a.invisible) = (true, invisible);
+        let mut d = drawing_with_block(Entity::new(Handle(2), EntityKind::AttDef(a)));
+        d.header.set_i64("ATTMODE", attmode);
+        extents_pair(&d).1.y
+    };
+    assert!(top(1, false) > 40.0);
+    assert!(top(0, false) < 40.0, "ATTMODE 0 hides it");
+    assert!(top(1, true) < 40.0);
+    assert!(top(2, true) > 40.0, "ATTMODE 2 shows an invisible one");
 }

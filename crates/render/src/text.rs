@@ -77,7 +77,7 @@ pub(super) fn mesh(g: &TextGlyph, xf: Mat3, pixel: f64) -> Arc<Mesh> {
     let contours = ttf::glyph_contours(&g.face, g.gid);
     let points = contours.iter().map(Vec::len).try_fold(0usize, usize::checked_add);
     // Font data is untrusted; don't hand unbounded or invalid paths to the tessellator.
-    if !points.is_some_and(|n| n <= MAX_POINTS) || contours.iter().flatten().any(|p| !p.is_finite() || p.x.abs().max(p.y.abs()) > 1.0e6) {
+    if points.is_none_or(|n| n > MAX_POINTS) || contours.iter().flatten().any(|p| !p.is_finite() || p.x.abs().max(p.y.abs()) > 1.0e6) {
         return Arc::new(Mesh { contours: Arc::default(), triangles: Vec::new() });
     }
     let contours = match detail {
@@ -163,8 +163,10 @@ fn simplify(contour: &[Vec2], tolerance: f64) -> Vec<Vec2> {
     if result.len() >= 4 { result } else { contour.to_vec() }
 }
 
-/// Monotone tessellation with even-odd holes and intersections. Work in font units so f32
-/// precision is independent of drawing coordinates; the placement stays f64. The existing
+/// Monotone tessellation with the nonzero winding rule that TrueType and OpenType outlines are
+/// defined with: overlapping contours stay filled (Arial Unicode's 진 draws its final ㄴ twice,
+/// which even-odd cancelled out) and holes are contours wound the other way. Work in font units
+/// so f32 precision is independent of drawing coordinates; the placement stays f64. The existing
 /// slab filler remains the fallback when tessellation fails (including its u16 vertex limit).
 fn triangulate(contours: &[Vec<Vec2>]) -> Vec<Vec2> {
     let mut path = Path::builder();
@@ -179,7 +181,7 @@ fn triangulate(contours: &[Vec<Vec2>]) -> Vec<Vec2> {
     let mut buffers: VertexBuffers<Vec2, u16> = VertexBuffers::new();
     let result = FillTessellator::new().tessellate_path(
         &path.build(),
-        &FillOptions::even_odd(),
+        &FillOptions::non_zero(),
         &mut BuffersBuilder::new(&mut buffers, |v: FillVertex<'_>| {
             let p = v.position();
             Vec2::new(f64::from(p.x), f64::from(p.y))
@@ -189,4 +191,103 @@ fn triangulate(contours: &[Vec<Vec2>]) -> Vec<Vec2> {
         return crate::fill::triangulate_evenodd(contours);
     }
     buffers.indices.into_iter().filter_map(|i| buffers.vertices.get(usize::from(i)).copied()).collect()
+}
+
+/// [`triangulate`] for a glyph outline already placed in drawing coordinates (complex-script
+/// runs carry no [`TextGlyph`]): tessellated relative to its first point so f32 keeps the
+/// precision. Outlines past the limits [`mesh`] applies keep the slab filler.
+pub(super) fn triangulate_placed(contours: &[Vec<Vec2>]) -> Vec<Vec2> {
+    let Some(&origin) = contours.iter().flatten().next() else { return Vec::new() };
+    let points = contours.iter().map(Vec::len).try_fold(0usize, usize::checked_add);
+    let out_of_range = |p: &Vec2| {
+        let d = *p - origin;
+        !p.is_finite() || d.x.abs().max(d.y.abs()) > 1.0e6
+    };
+    if !points.is_some_and(|n| n <= MAX_POINTS) || contours.iter().flatten().any(out_of_range) {
+        return crate::fill::triangulate_evenodd(contours);
+    }
+    let local: Vec<Vec<Vec2>> = contours.iter().map(|c| c.iter().map(|&p| p - origin).collect()).collect();
+    triangulate(&local).into_iter().map(|p| p + origin).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn square(x: f64, y: f64, s: f64) -> Vec<Vec2> {
+        // Clockwise, as TrueType draws outer contours.
+        vec![Vec2::new(x, y), Vec2::new(x, y + s), Vec2::new(x + s, y + s), Vec2::new(x + s, y), Vec2::new(x, y)]
+    }
+
+    fn area(tris: &[Vec2]) -> f64 {
+        tris.chunks(3)
+            .filter_map(|t| match t {
+                [a, b, c] => Some(((*b - *a).x * (*c - *a).y - (*b - *a).y * (*c - *a).x).abs() / 2.0),
+                _ => None,
+            })
+            .sum()
+    }
+
+    #[test]
+    fn duplicated_contour_stays_filled() {
+        // A composite glyph that draws one component twice (Arial Unicode's 진 and its ㄴ).
+        let s = square(0.0, 0.0, 10.0);
+        assert!((area(&triangulate(&[s.clone(), s])) - 100.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn overlapping_contours_fill_their_union() {
+        let tris = triangulate(&[square(0.0, 0.0, 10.0), square(5.0, 5.0, 10.0)]);
+        assert!((area(&tris) - 175.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn counter_wound_contour_is_still_a_hole() {
+        let mut hole = square(4.0, 4.0, 2.0);
+        hole.reverse();
+        assert!((area(&triangulate(&[square(0.0, 0.0, 10.0), hole])) - 96.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn placed_outline_far_from_the_origin_keeps_its_place_and_fill() {
+        let s = square(5.0e5, -3.0e5, 2.0);
+        let tris = triangulate_placed(&[s.clone(), s]);
+        assert!((area(&tris) - 4.0).abs() < 1e-6);
+        assert!(tris.iter().all(|p| (5.0e5..=5.0e5 + 2.0).contains(&p.x) && (-3.0e5..=-3.0e5 + 2.0).contains(&p.y)));
+    }
+
+    // Regression test for #651: the level of detail followed the pixel size, so a page of small
+    // filled text on screen kept a few points a glyph while a plot kept all of them.
+    #[test]
+    fn a_small_on_screen_pixel_simplifies_glyphs_and_a_plot_does_not() {
+        // Text of height 1 has a 700-unit cap height: one font unit is 1/700 of a drawing unit.
+        let xf = Mat3 { a: 1.0 / 700.0, b: 0.0, c: 0.0, d: 1.0 / 700.0, e: 0.0, f: 0.0 };
+        assert!(matches!(detail(xf, 0.0), Detail::Full), "a plot keeps every point");
+        assert!(matches!(detail(xf, 2.0), Detail::Box), "an em under two pixels is the ink's box");
+        assert!(matches!(detail(xf, 0.1), Detail::Reduced(band) if band >= 2), "10 px per cap height simplifies");
+        assert!(matches!(detail(xf, f64::NAN), Detail::Full), "a pixel size that is not a size keeps full detail");
+    }
+
+    #[test]
+    fn a_coarse_band_drops_the_points_of_a_flattened_curve() {
+        // A ring of 64 points, the outline a flattened curve gives.
+        let ring: Vec<Vec2> = (0..64u32)
+            .map(|i| {
+                let t = std::f64::consts::TAU * f64::from(i) / 64.0;
+                Vec2::new(500.0 * t.cos(), 350.0 * t.sin())
+            })
+            .collect();
+        let coarse = simplify(&ring, 8.0);
+        assert!(coarse.len() < ring.len() / 2, "{} of {} points kept at 8 font units", coarse.len(), ring.len());
+        assert!(coarse.len() >= 4, "a ring never collapses to a line: {}", coarse.len());
+        let fine = simplify(&ring, 0.01);
+        assert!(fine.len() >= ring.len(), "a fine band keeps every point: {} of {}", fine.len(), ring.len());
+    }
+
+    #[test]
+    fn hostile_placed_outline_never_panics() {
+        assert!(triangulate_placed(&[]).is_empty());
+        let _ = triangulate_placed(&[vec![Vec2::new(f64::NAN, 0.0), Vec2::X, Vec2::Y]]);
+        let _ = triangulate_placed(&[vec![Vec2::ZERO, Vec2::new(1.0e300, 0.0), Vec2::Y]]);
+    }
 }
